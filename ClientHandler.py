@@ -3,6 +3,7 @@ import pymongo
 from pymongo import MongoClient
 import os
 import json
+import uuid
 
 # connecting to mongo service
 mongo_client = MongoClient('localhost', 27017)
@@ -70,24 +71,20 @@ class ClientHandler(Thread):
     def run(self):
         # sign up / sing in / link access
         try:
-            first_action = self.get_msg()
-            if(first_action == 'register'):
-                self.registration_handler()
-            elif(first_action == 'login'):
-                self.login_handler()
             while True:
                 action = self.get_msg()
                 choices = ['Upload', 'Choose file', 'Shared with me', 'Get shareable link', 'Share with user',
-                           'Create folder', 'Rename folder', 'Move files', 'Delete folder']
+                           'Create folder', 'Rename folder', 'Move files', 'Delete folder', 'login', 'register', 'Access via link']
                 handlers = [self.upload_file, self.choose_file, self.list_shared_with_me, self.get_shareable_link, self.share_with_user,
-                           self.create_folder, self.rename_folder, self.move_files, self.delete_folder]
+                           self.create_folder, self.rename_folder, self.move_files, self.delete_folder, self.login_handler,
+                            self.registration_handler, self.access_via_link]
                 for i in range(len(choices)):
                     if (action == choices[i]):
                         handlers[i]()
         except RuntimeError:
             self.run()
-        except:
-            pass
+        except Exception as e:
+            print('faaaak', e)
 
     def rename_folder(self):
         pass
@@ -95,15 +92,27 @@ class ClientHandler(Thread):
     def create_folder(self):
         pass
 
+    def access_via_link(self):
+        link = self.sock.recv(4096).decode()
+        print('recieveing link', link)
+        try:
+            same_user = db.users.find_one({"link": uuid.UUID(link)})
+        except ValueError:
+            same_user = None
+        print('user', same_user)
+        if(same_user == None):
+            self.send_msg('NOT FOUND')
+        else:
+            self.user = same_user
+            self.send_msg('FOUND')
+            files = self.get_files(same_user)
+            self.send_msg(json.dumps(files))
+
+
     def choose_file(self):
         file_name = self.sock.recv(4096).decode()
 
         path = './storage/{}/{}'.format(self.user['username'], file_name)
-
-        # if (is_binary(open(path, 'r').read(1024).encode())):
-        #     self.sock.send('y'.encode())
-        # else:
-        #     self.sock.send('n'.encode())
 
         print('Reading', path)
         with open(path, 'rb') as file:
@@ -112,13 +121,18 @@ class ClientHandler(Thread):
         self.send_file(file_content)
 
 
-    def get_files(self):
+    def get_files(self, user = None):
         files = []
-        # r=root, d=directories, f = files
-        for r, d, f in os.walk('./storage/{}'.format(self.user['username'])):
-            for file in f:
-                files.append(file)
 
+        if(user == None):
+            # r=root, d=directories, f = files
+            for r, d, f in os.walk('./storage/{}'.format(self.user['username'])):
+                for file in f:
+                    files.append(file)
+        else:
+            for r, d, f in os.walk('./storage/{}'.format(user['username'])):
+                for file in f:
+                    files.append(file)
         return files
 
     def upload_file(self):
@@ -126,7 +140,6 @@ class ClientHandler(Thread):
         filename = self.get_msg()
 
         path = './storage/{}/{}'.format(self.user['username'],filename)
-        # mode = 'wb' if is_binary(content) else 'w'
         mode = 'wb'
 
         if self.user['is_premium']=='y' or len(self.get_files()) < 5:
@@ -152,10 +165,28 @@ class ClientHandler(Thread):
         pass
 
     def get_shareable_link(self):
-        pass
+        if(self.user["link"]==None):
+            myquery = {"username": self.user['username']}
+            newvalues = {'$set': {'link': uuid.uuid4()}}
+            db.users.update_one(myquery,newvalues)
+            self.user = db.users.find_one({"username": self.user['username']})
+        else:
+            print('Ima link {}'.format(self.user['link']))
+        self.sock.send(str(self.user['link']).encode())
+        print('poslao link')
 
     def share_with_user(self):
-        pass
+        username = self.sock.recv(4096).decode()
+        same_user = db.users.find_one({"username": username})
+        if(same_user == None):
+            self.sock.send("NOT FOUND".encode())
+        else:
+            self.sock.send("FOUND".encode())
+            myquery = {"username": self.user['username']}
+            # makes sure allowed users are unique
+            newvalues = {'$addToSet': {'allowed_users':username}}
+            db.users.update_one(myquery, newvalues)
+
 
     def get_msg(self, response = 'OK'):
         msg = self.sock.recv(4096).decode()
