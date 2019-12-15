@@ -1,6 +1,7 @@
 from threading import Thread
 import pymongo
 from pymongo import MongoClient
+from bson import json_util
 import os
 import json
 import uuid
@@ -29,8 +30,13 @@ class ClientHandler(Thread):
         self.sock = cl_sock
         self.address = cl_address
         self.start()
+        self.selected_username = None
+
+    def reset_selected_user(self):
+        self.selected_username = None
 
     def registration_handler(self):
+        self.reset_selected_user()
         username = self.get_msg()
         password = self.get_msg()
         is_premium = self.get_msg()
@@ -54,6 +60,7 @@ class ClientHandler(Thread):
             self.registration_handler()
 
     def login_handler(self):
+        self.reset_selected_user()
         username = self.get_msg()
         password = self.get_msg()
         same_user = db.users.find_one({"username": username})
@@ -74,15 +81,16 @@ class ClientHandler(Thread):
             while True:
                 action = self.get_msg()
                 choices = ['Upload', 'Choose file', 'Shared with me', 'Get shareable link', 'Share with user',
-                           'Create folder', 'Rename folder', 'Move files', 'Delete folder', 'login', 'register', 'Access via link']
+                           'Create folder', 'Rename folder', 'Move files', 'Delete folder', 'login', 'register', 'Access via link','see user\'s drive']
                 handlers = [self.upload_file, self.choose_file, self.list_shared_with_me, self.get_shareable_link, self.share_with_user,
                            self.create_folder, self.rename_folder, self.move_files, self.delete_folder, self.login_handler,
-                            self.registration_handler, self.access_via_link]
+                            self.registration_handler, self.access_via_link, self.send_shared_drive]
                 for i in range(len(choices)):
                     if (action == choices[i]):
                         handlers[i]()
         except RuntimeError:
             self.run()
+            #TODO manage EXIT
         except Exception as e:
             print('faaaak', e)
 
@@ -94,16 +102,15 @@ class ClientHandler(Thread):
 
     def access_via_link(self):
         link = self.sock.recv(4096).decode()
-        print('recieveing link', link)
         try:
             same_user = db.users.find_one({"link": uuid.UUID(link)})
         except ValueError:
             same_user = None
-        print('user', same_user)
+        print('Accessing to user: ', same_user)
         if(same_user == None):
             self.send_msg('NOT FOUND')
         else:
-            self.user = same_user
+            self.selected_username = same_user['username']
             self.send_msg('FOUND')
             files = self.get_files(same_user)
             self.send_msg(json.dumps(files))
@@ -112,7 +119,12 @@ class ClientHandler(Thread):
     def choose_file(self):
         file_name = self.sock.recv(4096).decode()
 
-        path = './storage/{}/{}'.format(self.user['username'], file_name)
+        if self.selected_username == None:
+            username = self.user['username']
+        else:
+            username = self.selected_username
+
+        path = './storage/{}/{}'.format(username, file_name)
 
         print('Reading', path)
         with open(path, 'rb') as file:
@@ -137,29 +149,34 @@ class ClientHandler(Thread):
 
     def upload_file(self):
         content = self.recv_file()
-        filename = self.get_msg()
+        self.sock.send('OK'.encode())
+        filename = self.sock.recv(4096).decode()
 
         path = './storage/{}/{}'.format(self.user['username'],filename)
-        mode = 'wb'
 
         if self.user['is_premium']=='y' or len(self.get_files()) < 5:
-            with open(path, mode) as file:
+            with open(path, 'wb') as file:
                 file.write(content)
-            print(mode)
-            print(path)
             self.send_msg('UPLOADED')
         else:
             self.send_msg('STORAGE FULL')
-            print(path)
-            print(mode)
 
 
 
     def move_files(self):
         pass
 
+    def send_shared_drive(self):
+        username = self.sock.recv(4096).decode()
+        self.selected_username = username
+        same_user = db.users.find_one({"username": username})
+        files = self.get_files(same_user)
+        self.send_msg(json.dumps(files))
+
     def list_shared_with_me(self):
-        pass
+        myquery = {"allowed_users": self.user['username']}
+        users_who_shared_with_me = [user['username'] for user in db.users.find(myquery)]
+        self.sock.send(json.dumps(users_who_shared_with_me).encode())
 
     def delete_folder(self):
         pass
@@ -170,10 +187,7 @@ class ClientHandler(Thread):
             newvalues = {'$set': {'link': uuid.uuid4()}}
             db.users.update_one(myquery,newvalues)
             self.user = db.users.find_one({"username": self.user['username']})
-        else:
-            print('Ima link {}'.format(self.user['link']))
-        self.sock.send(str(self.user['link']).encode())
-        print('poslao link')
+        self.send_msg(str(self.user['link']))
 
     def share_with_user(self):
         username = self.sock.recv(4096).decode()
@@ -193,6 +207,7 @@ class ClientHandler(Thread):
         self.sock.send(response.encode())
         print('message received: {}'.format(msg))
         if (msg == 'EXIT'):
+            self.reset_selected_user()
             raise RuntimeError
         return msg
 
