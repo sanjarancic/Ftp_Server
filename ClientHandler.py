@@ -68,8 +68,8 @@ class ClientHandler(Thread):
             print('Naso i salje ok')
             self.user = same_user
             self.send_msg(self.user['is_premium'])
-            files = self.get_files()
-            self.send_msg(json.dumps(files))
+            # files = self.get_files()
+            # self.send_msg(json.dumps(files))
         else:
             print('ne postoji user')
             self.send_msg('not finished')
@@ -81,10 +81,11 @@ class ClientHandler(Thread):
             while True:
                 action = self.get_msg()
                 choices = ['Upload', 'Choose file', 'Shared with me', 'Get shareable link', 'Share with user',
-                           'Create folder', 'Rename folder', 'Move files', 'Delete folder', 'login', 'register', 'Access via link','see user\'s drive']
+                           'Create folder', 'Rename folder', 'Move files', 'Delete folder', 'login', 'register',
+                           'Access via link','see user\'s drive', 'Get Files']
                 handlers = [self.upload_file, self.choose_file, self.list_shared_with_me, self.get_shareable_link, self.share_with_user,
                            self.create_folder, self.rename_folder, self.move_files, self.delete_folder, self.login_handler,
-                            self.registration_handler, self.access_via_link, self.send_shared_drive]
+                            self.registration_handler, self.access_via_link, self.send_shared_drive, self.get_files_for_user_from_directory]
                 for i in range(len(choices)):
                     if (action == choices[i]):
                         handlers[i]()
@@ -95,10 +96,49 @@ class ClientHandler(Thread):
             print('faaaak', e)
 
     def rename_folder(self):
-        pass
+        username = self.user['username']
+        current_directory = self.get_msg()
+        path_to_folder = './storage/{}{}'.format(username, current_directory)
+        print('path to folder:',path_to_folder)
+        old_name = self.get_msg()
+        path_old = path_to_folder + old_name
+        new_name = self.get_msg()
+        path_new = path_to_folder + new_name
+        print('path old', path_old)
+        print('path new',path_new)
+
+        files_in_current_dir = self.get_files_from_directory(path_to_folder)
+        if old_name not in files_in_current_dir:
+            self.send_msg('not found')
+            print('old does not exist')
+        else:
+            if new_name not in files_in_current_dir:
+                self.send_msg('found')
+                os.rename(path_old,path_new)
+                print('found old, no new, renamed')
+            else:
+                self.send_msg('exists')
+                print('new exists already')
+
 
     def create_folder(self):
-        pass
+        try:
+            username = self.user['username']
+            folder_path = './storage/{}/{}'.format(username, self.sock.recv(4096).decode())
+            os.mkdir(folder_path)
+            self.sock.send('Successfull'.encode())
+        except FileExistsError:
+            self.sock.send('folder exists'.encode())
+
+    def get_files_for_user_from_directory(self):
+        username = self.user['username']
+        path = './storage/{}/{}'.format(username, self.sock.recv(4096).decode())
+        # same_user = db.users.find_one({"username": username})
+        # self.selected_username = same_user['username']
+
+
+        files = self.get_files_from_directory(path)
+        self.send_msg(json.dumps(files))
 
     def access_via_link(self):
         link = self.sock.recv(4096).decode()
@@ -126,33 +166,45 @@ class ClientHandler(Thread):
 
         path = './storage/{}/{}'.format(username, file_name)
 
-        print('Reading', path)
-        with open(path, 'rb') as file:
-            file_content = file.read()
+        # if we're looking at directory
+        if (path[-1] == '/'):
+            files = self.get_files_from_directory(path)
+            self.sock.send(json.dumps(files).encode())
+        else:
+            print('Reading', path)
+            with open(path, 'rb') as file:
+                file_content = file.read()
+            self.send_file(file_content)
 
-        self.send_file(file_content)
-
-
-    def get_files(self, user = None):
+    def get_files_from_directory(self, path):
         files = []
 
-        if(user == None):
-            # r=root, d=directories, f = files
-            for r, d, f in os.walk('./storage/{}'.format(self.user['username'])):
-                for file in f:
-                    files.append(file)
-        else:
-            for r, d, f in os.walk('./storage/{}'.format(user['username'])):
-                for file in f:
-                    files.append(file)
+        for r, d, f in os.walk(path):
+            for dir in d:
+                files.append(dir + '/')
+
+            for file in f:
+                files.append(file)
+            # get only files and directories from the root
+            break
+
         return files
+
+    def get_files(self, user = None):
+        if (user == None):
+            username = self.user['username']
+        else:
+            username = user['username']
+
+        return self.get_files_from_directory('./storage/{}'.format(username))
 
     def upload_file(self):
         content = self.recv_file()
         self.sock.send('OK'.encode())
         filename = self.sock.recv(4096).decode()
 
-        path = './storage/{}/{}'.format(self.user['username'],filename)
+        path = './storage/{}{}'.format(self.user['username'],filename)
+        print(path)
 
         if self.user['is_premium']=='y' or len(self.get_files()) < 5:
             with open(path, 'wb') as file:
@@ -179,9 +231,29 @@ class ClientHandler(Thread):
         self.sock.send(json.dumps(users_who_shared_with_me).encode())
 
     def delete_folder(self):
-        pass
+        current_directory = self.get_msg()
+        folder_name = self.sock.recv(4096).decode()
+        path_to = './storage/{}{}'.format(self.user['username'], current_directory)
+        path = path_to + folder_name
+        files_in_current_dir = self.get_files_from_directory(path_to)
+        print('path to', files_in_current_dir, path_to)
+        if folder_name not in files_in_current_dir:
+            self.send_msg('not found')
+        else:
+            self.send_msg('found')
+            files_in_dir = self.get_files_from_directory(path)
+            print('path', files_in_dir, path)
+            if not files_in_dir:
+                os.rmdir(path)
+                self.send_msg('deleted')
+            else:
+                self.send_msg('full')
+
+
+        # self.('./storage/{}/{}'.format(self.user['username'], folder_name))
 
     def get_shareable_link(self):
+        self.sock.recv(4096).decode()
         if(self.user["link"]==None):
             myquery = {"username": self.user['username']}
             newvalues = {'$set': {'link': uuid.uuid4()}}
