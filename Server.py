@@ -12,10 +12,12 @@ srv_sock.bind((srv_address, srv_port))
 srv_sock.listen(5)
 print('Welcome to fake google drive :)')
 
+users = []
+
 
 while True:
     # get the client socket and client address when accepting the connection
     cl_sock, cl_address = srv_sock.accept()
 
     # we initialize the ClientThread class defined above
-    client = ClientHandler(cl_sock, cl_address)
+    client = ClientHandler(cl_sock, cl_address, users)
